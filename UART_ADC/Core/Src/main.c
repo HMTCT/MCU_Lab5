@@ -23,6 +23,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
+#include <string.h>
+#include "timer.h"
 //#include "command_parser_fsm.h"
 //#include "uart_communication_fsm.h"
 /* USER CODE END Includes */
@@ -64,51 +66,99 @@ static void MX_TIM2_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#define MAX_BUFFER_SIZE  30
+#define MAX_BUFFER_SIZE  	30
+#define TIME_OUT			3000
+#define RST_COMMAND			1
+#define OK_COMMAND			2
+#define WAITING				3
+
 uint8_t temp = 0;
 uint8_t buffer[MAX_BUFFER_SIZE];
 uint8_t index_buffer = 0;
 uint8_t buffer_flag = 0;
 uint32_t ADC_value = 0;
 
-int command_flag = 0;
+uint8_t rst_command[5] = {'!', 'R', 'S', 'T', '#'};
+uint8_t ok_command[4] = {'!', 'O', 'K', '#'};
+
 int command_data = 0;
+int command_flag = 0;
 
 char str[50];
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
 	if(huart->Instance == USART2){
 		//HAL_UART_Transmit(&huart2, &temp, 1, 50);
 		buffer[index_buffer++] = temp;
-		if(index_buffer == 30)
-			index_buffer = 0;
+		if (index_buffer == MAX_BUFFER_SIZE)
+			index_buffer = 5;
 		buffer_flag = 1;
 		HAL_UART_Receive_IT(&huart2, &temp, 1);
 	}
 }
 
-void command_parser_fsm(){
+void validate_command(){
 	switch (command_data) {
-		case 0:
-			if (temp == '!')
-				command_flag = 1;
+		case 4:
+			for (int i = 0; i < 4; ++i) {
+				if (buffer[i] != ok_command[i])
+					return;
+			}
+			command_flag = OK_COMMAND;
+			break;
+		case 5:
+			for (int i = 0; i < 5; ++i) {
+				if (buffer[i] != rst_command[i])
+					return;
+			}
+				command_flag = RST_COMMAND;
+			break;
+		default:
+			break;
+	}
+}
+
+void command_parser_fsm(){
+	switch (temp) {
+		case 13:
+			//ENTER KEY
+			validate_command();
+			command_data = 0;
+			index_buffer = 0;
+			break;
+		case 8:
+			//BACKSPACE
+			if (command_data > 0)
+				command_data--;
+			if (command_data < 5 && command_data >= 0)
+				index_buffer = command_data;
+			break;
+		default:
+			command_data++;
+			break;
+	}
+}
+
+void uart_communiation_fsm(){
+	switch (command_flag) {
+		case RST_COMMAND:
+			HAL_ADC_Start(&hadc1);
+			ADC_value =  HAL_ADC_GetValue(&hadc1);
+			HAL_UART_Transmit(&huart2, (void *)str, sprintf(str, "!ADC=%ld#\r\n", ADC_value), 1000);
+			setTimer0(TIME_OUT);
+			command_flag = WAITING;
+			break;
+		case OK_COMMAND:
+			break;
+		case WAITING:
+			if (timer0_flag == 1){
+				HAL_UART_Transmit(&huart2, (void *)str, sprintf(str, "!ADC=%ld#\r\n", ADC_value), 1000);
+				setTimer0(TIME_OUT);
+			}
 			break;
 		default:
 			break;
 	}
 
-	if (temp == '\r'){
-		//User hit ENTER KEY
-		flag = 1;
-	}
-}
-
-void uart_communiation_fsm(){
-	if (!flag)
-		return;
-	HAL_ADC_Start(&hadc1);
-	ADC_value =  HAL_ADC_GetValue(&hadc1);
-	HAL_UART_Transmit(&huart2, (void *)str, sprintf(str, "!ADC=%ld#\r\n", ADC_value), 1000);
-	flag = 0;
 }
 /* USER CODE END 0 */
 
@@ -144,6 +194,7 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+  HAL_TIM_Base_Start_IT (& htim2 );
   HAL_UART_Receive_IT(&huart2, &temp, 1);
   //HAL_UART_Transmit(&huart2, &temp, 1, 5000);
   /* USER CODE END 2 */
@@ -153,7 +204,7 @@ int main(void)
 
   while (1)
   {
-	  if(buffer_flag == 1){
+	  if (buffer_flag == 1){
 		  command_parser_fsm();
 		  buffer_flag = 0;
 		  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
@@ -357,7 +408,10 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+void HAL_TIM_PeriodElapsedCallback ( TIM_HandleTypeDef * htim )
+{
+	timer_run();
+}
 /* USER CODE END 4 */
 
 /**
